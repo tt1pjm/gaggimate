@@ -1,50 +1,37 @@
 #!/usr/bin/env python3
 """
-Generate src/generated/board_override.h from config/board_override.json.
-
-Validation:
- - Detect duplicate pin assignments across output-capable fields and error.
- - Ensure I2C SCL != SDA.
- - Treat UART0 pins (1,3) as "unsafe"; fail unless allowUnsafe:true for that override.
- - Emits a helpful header comment with timestamp and the JSON used.
+Generate src/generated/board_override.h and lib/GaggiMateController/src/generated/board_override.h
+from config/board_override.json.
 """
-import json
-import sys
+import json, sys
 from pathlib import Path
 from datetime import datetime
 
 ROOT = Path(__file__).resolve().parents[1]
 JSON_PATH = ROOT / "config" / "board_override.json"
-OUT_DIR = ROOT / "src" / "generated"
-OUT_FILE = OUT_DIR / "board_override.h"
+OUT_DIRS = [
+    ROOT / "src" / "generated",
+    ROOT / "lib" / "GaggiMateController" / "src" / "generated"
+]
 
-# Output-capable fields (using push-pull or actively driven) to check duplicate output conflicts.
-OUTPUT_FIELDS = {
-    "heaterPin", "pumpPin", "valvePin", "altPin",
-    "ext1Pin", "ext2Pin", "ext3Pin", "ext4Pin", "ext5Pin"
-}
-
-# "Unsafe" pins for ESP32-S3 we will warn/error about by default.
+OUTPUT_FIELDS = {"heaterPin", "pumpPin", "valvePin", "altPin",
+                 "ext1Pin", "ext2Pin", "ext3Pin", "ext4Pin", "ext5Pin"}
 UNSAFE_PINS = {1, 3}
 
 def load_json():
     if not JSON_PATH.exists():
-        print(f"No {JSON_PATH} found: generating empty stub header.")
         return {"overrides": []}
-    with JSON_PATH.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    return json.loads(JSON_PATH.read_text(encoding="utf-8"))
 
 def validate_override(ov):
     errors = []
     warnings = []
     assigned = {}
-    # collect assigned pins per logical field
     for key, val in ov.items():
         if key in ("autodetectValue", "name", "capabilities", "allowUnsafe"):
             continue
         if isinstance(val, int):
             assigned.setdefault(key, val)
-    # Find duplicates among output-capable fields by pin number
     pin_to_fields = {}
     for field, pin in assigned.items():
         pin_to_fields.setdefault(pin, []).append(field)
@@ -52,12 +39,9 @@ def validate_override(ov):
         outs = [f for f in fields if f in OUTPUT_FIELDS]
         if len(outs) > 1:
             errors.append(f"Pin {pin} assigned to multiple output fields: {outs}")
-    # I2C SCL != SDA
-    scl = ov.get("pressureScl")
-    sda = ov.get("pressureSda")
+    scl = ov.get("pressureScl"); sda = ov.get("pressureSda")
     if scl is not None and sda is not None and scl == sda:
         errors.append(f"pressureScl and pressureSda are both {scl} (must be different)")
-    # unsafe pins
     allow_unsafe = bool(ov.get("allowUnsafe"))
     used_unsafe = [pin for pin in pin_to_fields.keys() if pin in UNSAFE_PINS]
     if used_unsafe and not allow_unsafe:
@@ -66,8 +50,7 @@ def validate_override(ov):
         warnings.append(f"Unsafe pins used but allowUnsafe=true: {used_unsafe} (you accept the risks)")
     return errors, warnings
 
-def generate_header(data):
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def build_contents(data):
     lines = []
     lines.append("/*")
     lines.append("  Auto-generated board_override.h")
@@ -81,8 +64,7 @@ def generate_header(data):
     lines.append("")
     lines.append("inline ControllerConfig applyBoardOverride(const ControllerConfig &base) {")
     lines.append("    ControllerConfig c = base;")
-    overrides = data.get("overrides", [])
-    for ov in overrides:
+    for ov in data.get("overrides", []):
         adv = ov.get("autodetectValue")
         if adv is None:
             continue
@@ -90,7 +72,6 @@ def generate_header(data):
         caps = ov.get("capabilities", {})
         for capk, capv in caps.items():
             vstr = "true" if capv else "false"
-            # ControllerConfig uses the misspelled 'capabilites'
             lines.append(f'        c.capabilites.{capk} = {vstr};')
         for key, val in ov.items():
             if key in ("autodetectValue", "name", "capabilities", "allowUnsafe"):
@@ -101,31 +82,28 @@ def generate_header(data):
         lines.append("    }")
     lines.append("    return c;")
     lines.append("}")
-    OUT_FILE.write_text("\n".join(lines), encoding="utf-8")
-    print(f"Wrote {OUT_FILE}")
+    return "\n".join(lines) + "\n"
 
 def main():
     data = load_json()
-    overall_errors = []
-    overall_warnings = []
+    errors = []; warnings = []
     for ov in data.get("overrides", []):
-        errs, warns = validate_override(ov)
-        if errs:
-            overall_errors.extend(errs)
-        if warns:
-            overall_warnings.extend(warns)
-    if overall_warnings:
+        e, w = validate_override(ov)
+        errors.extend(e); warnings.extend(w)
+    if warnings:
         print("Warnings:")
-        for w in overall_warnings:
-            print("  -", w)
-    if overall_errors:
-        print("Errors found in board_override.json:")
-        for e in overall_errors:
-            print("  -", e)
-        print("Aborting generation. Fix the errors or set allowUnsafe:true where appropriate.")
+        for w in warnings: print(" -", w)
+    if errors:
+        print("Errors:")
+        for e in errors: print(" -", e)
+        print("Aborting generation.")
         sys.exit(2)
-    generate_header(data)
-    print("Generation completed successfully.")
+    content = build_contents(data)
+    for d in OUT_DIRS:
+        d.mkdir(parents=True, exist_ok=True)
+        out_file = d / "board_override.h"
+        out_file.write_text(content, encoding="utf-8")
+        print("Wrote", out_file)
 
 if __name__ == "__main__":
     main()
