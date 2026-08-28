@@ -1,0 +1,61 @@
+name: Upstream sync and generated-header PR
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # daily 02:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/jniebuhr/gaggimate.git
+          git fetch upstream --depth=1
+
+      - name: Create sync branch
+        run: |
+          TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
+          git checkout -b automation/upstream-sync-${TIMESTAMP} upstream/main
+
+      - name: Run generator
+        run: |
+          python3 scripts/generate_board_override.py
+
+      - name: Commit generated header (if changed)
+        run: |
+          git add src/generated/board_override.h || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update generated board_override.h from config/board_override.json"
+            git push origin HEAD
+          else
+            echo "No changes to generated header."
+          fi
+
+      - name: Create PR
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update generated board_override.h"
+          title: "chore: upstream sync - update generated board_override.h"
+          body: |
+            This PR updates the generated board_override.h from config/board_override.json as part of automated upstream sync.
+          base: main
+          branch: automation/upstream-sync-${{ github.run_id }}
+          reviewers: ""
