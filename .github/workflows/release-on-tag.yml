@@ -1,0 +1,77 @@
+name: Build & Release (on tag)
+
+on:
+  push:
+    tags:
+      - 'v*'            # semantic releases like v1.2.3
+
+permissions:
+  contents: write
+
+jobs:
+  build_and_release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install -U pip
+          pip install platformio
+
+      - name: Run generator
+        run: |
+          python3 scripts/generate_board_override.py
+
+      - name: Copy override into data (for LittleFS)
+        run: |
+          python3 scripts/pio_prebuild_copy_override.py
+
+      - name: Build controller firmware
+        run: |
+          pio run -e controller
+
+      - name: Collect firmware artifacts
+        run: |
+          mkdir -p release_assets
+          find .pio/build -type f -name '*.bin' -o -name '*.elf' -o -name '*.hex' -o -name '*.img' -o -name '*.littlefs.bin' | tee build_files.txt
+          while read -r f; do cp "$f" release_assets/; done < build_files.txt
+          ls -la release_assets
+
+      - name: Compute checksums & create manifest
+        id: manifest
+        run: |
+          mkdir -p release_assets/manifest
+          > release_assets/manifest/manifest_items.json
+          for f in release_assets/*; do
+            [ -f "$f" ] || continue
+            filename=$(basename "$f")
+            sha256=$(sha256sum "$f" | awk '{print $1}')
+            size=$(stat -c%s "$f")
+            jq -n --arg fn "$filename" --arg sh "$sha256" --argjson sz $size '{filename:$fn,sha256:$sh,size:$sz}' >> release_assets/manifest/manifest_items.json
+          done
+          TAG=${GITHUB_REF#refs/tags/}
+          jq -n --arg ver "$TAG" --slurpfile items release_assets/manifest/manifest_items.json '{version:$ver, items:$items[0]}' > release_assets/manifest/manifest.json
+          cat release_assets/manifest/manifest.json
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Assets
+        run: |
+          gh release upload "${{ github.ref_name }}" release_assets/* --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
