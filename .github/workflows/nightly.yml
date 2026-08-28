@@ -1,0 +1,70 @@
+name: Nightly Build & Publish (gh-pages)
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # daily 03:00 UTC (adjust if needed)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  nightly_build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install -U pip
+          pip install platformio
+
+      - name: Run generator
+        run: |
+          python3 scripts/generate_board_override.py
+
+      - name: Copy override into data
+        run: |
+          python3 scripts/pio_prebuild_copy_override.py
+
+      - name: Build controller firmware
+        run: |
+          pio run -e controller
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          find .pio/build -type f -name '*.bin' -o -name '*.littlefs.bin' -o -name '*.elf' | xargs -I{} cp {} artifacts/ || true
+
+      - name: Compute checksums and create manifest
+        id: manifest
+        run: |
+          TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
+          mkdir -p publish/firmware/nightly/${TIMESTAMP}
+          > publish/firmware/nightly/${TIMESTAMP}/manifest_items.json
+          for f in artifacts/*; do
+            [ -f "$f" ] || continue
+            filename=$(basename "$f")
+            cp "$f" publish/firmware/nightly/${TIMESTAMP}/"$filename"
+            sha256=$(sha256sum "$f" | awk '{print $1}')
+            size=$(stat -c%s "$f")
+            jq -n --arg fn "$filename" --arg sh "$sha256" --argjson sz $size '{filename:$fn,sha256:$sh,size:$sz}' >> publish/firmware/nightly/${TIMESTAMP}/manifest_items.json
+          done
+          jq -s '.' publish/firmware/nightly/${TIMESTAMP}/manifest_items.json > publish/firmware/nightly/${TIMESTAMP}/manifest.json
+          echo "{\"version\":\"nightly-${TIMESTAMP}\", \"path\":\"/firmware/nightly/${TIMESTAMP}/manifest.json\"}" > publish/firmware/nightly/${TIMESTAMP}/meta.json
+          cp publish/firmware/nightly/${TIMESTAMP}/manifest.json publish/firmware/latest.json
+          ls -la publish/firmware/nightly/${TIMESTAMP}
+
+      - name: Publish to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./publish
