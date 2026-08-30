@@ -1,0 +1,145 @@
+name: Upstream ephemeral sync (create ephemeral PR & enable auto-merge)
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 2 * * *'  # daily 02:00 UTC (adjust as needed)
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_REPO: "jniebuhr/gaggimate"   # canonical upstream
+  BASE_BRANCH: "master"                 # your target branch in this repo
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      pr_url: ${{ steps.create_pr.outputs.pr_url }}
+    steps:
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.BASE_BRANCH }}
+          persist-credentials: true
+
+      - name: Configure git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote & fetch
+        run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git || true
+          git fetch upstream --depth=1
+
+      - name: Create ephemeral branch from upstream/main
+        id: create_branch
+        run: |
+          TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
+          BRANCH="automation/upstream-sync-${TIMESTAMP}"
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+          git checkout -b "${BRANCH}" upstream/main
+          echo "branch=${BRANCH}"
+        shell: bash
+
+      - name: Run generator and copy (ensure generator is present)
+        id: gen
+        run: |
+          set -euo pipefail
+          # run generator (it writes both src/... and lib/... generated headers)
+          python3 scripts/generate_board_override.py
+          python3 scripts/pio_prebuild_copy_override.py
+        working-directory: .
+        continue-on-error: false
+
+      - name: Apply tiny patch to source (idempotent)
+        id: patch
+        run: |
+          set -euo pipefail
+          ./scripts/apply_board_override_patch.sh
+        working-directory: .
+        continue-on-error: false
+
+      - name: Stage generated and patched files (if any)
+        id: stage
+        run: |
+          set -euo pipefail
+          # add likely changed files
+          git add src/generated/board_override.h lib/GaggiMateController/src/generated/board_override.h lib/GaggiMateController/src/GaggiMateController.cpp config/board_override.json data/board_override.json || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: regenerate board_override + apply patch" || true
+            echo "committed=true" >> $GITHUB_OUTPUT
+          else
+            echo "committed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push ephemeral branch (only if commit was made)
+        if: steps.stage.outputs.committed == 'true'
+        run: |
+          BRANCH="${{ steps.create_branch.outputs.branch }}"
+          git push origin HEAD:"${BRANCH}"
+          echo "pushed=true" >> $GITHUB_OUTPUT
+
+      - name: Create Pull Request (if branch pushed)
+        if: steps.stage.outputs.committed == 'true'
+        id: create_pr
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          BRANCH="${{ steps.create_branch.outputs.branch }}"
+          TITLE="automation: upstream sync — apply board_override patch"
+          BODY="Automated ephemeral PR: apply the small board override change and include generated artifacts.\n\nThis PR will be auto-merged when required checks pass."
+          # Create PR
+          RESP=$(curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/pulls" \
+            -d "$(jq -n --arg t "$TITLE" --arg head "$BRANCH" --arg base "${{ env.BASE_BRANCH }}" --arg b "$BODY" '{title:$t, head:$head, base:$base, body:$b}')" )
+          PR_NUMBER=$(echo "$RESP" | jq -r '.number // empty')
+          if [ -z "$PR_NUMBER" ]; then
+            # If PR already exists, find it
+            PR_NUMBER=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/pulls?head=${{ github.repository_owner }}:${BRANCH}&base=${{ env.BASE_BRANCH }}" | jq -r '.[0].number')
+          fi
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Failed to create or find PR: $RESP"
+            exit 6
+          fi
+          PR_URL="https://github.com/${REPO}/pull/$PR_NUMBER"
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+          echo "Created PR #$PR_NUMBER: $PR_URL"
+        env:
+          REPO: ${{ github.repository }}
+
+      - name: Enable auto-merge for PR (squash)
+        if: steps.stage.outputs.committed == 'true'
+        run: |
+          PR_NUMBER="${{ steps.create_pr.outputs.pr_number }}"
+          REPO="${{ github.repository }}"
+          echo "Enabling auto-merge for PR #${PR_NUMBER}"
+          curl -s -X PUT \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/pulls/${PR_NUMBER}/auto-merge" \
+            -d '{"merge_method":"squash"}' | jq .
+        env:
+          REPO: ${{ github.repository }}
+
+      - name: Create issue on failure (patch/generator)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const title = "Upstream ephemeral sync failed";
+            const body = `The ephemeral upstream sync workflow failed. Check workflow run: ${process.env.GITHUB_RUN_URL}`;
+            github.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body
+            })
