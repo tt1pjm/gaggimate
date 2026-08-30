@@ -7,6 +7,8 @@
 
 #include <utility>
 
+#include "generated/board_override.h"
+
 GaggiMateController::GaggiMateController(String version) : _version(std::move(version)) {
     configs.push_back(GM_STANDARD_REV_1X);
     configs.push_back(GM_STANDARD_REV_2X);
@@ -254,7 +256,7 @@ void GaggiMateController::detectBoard() {
         ESP_LOGI(LOG_TAG, "Board detect attempt %d/%d: ID=%d (raw: %d mV)", attempt + 1, MAX_DETECT_RETRIES, boardId, millivolts);
         for (ControllerConfig config : configs) {
             if (config.autodetectValue == boardId) {
-                _config = config;
+                _config = applyBoardOverride(config);
                 ESP_LOGI(LOG_TAG, "Using Board: %s", _config.name.c_str());
                 return;
             }

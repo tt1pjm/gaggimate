@@ -1,0 +1,20 @@
+{
+  "overrides": [
+    {
+      "autodetectValue": 1,
+      "name": "GM_STANDARD_REV_2X",
+      "pumpPin": 1,
+      "pumpSensePin": 2,
+      "pressureScl": 8,
+      "pressureSda": 12,
+      "capabilities": {
+        "dimming": true,
+        "pressure": true,
+        "ssrPump": false,
+        "ledControls": false,
+        "tof": false
+      },
+      "allowUnsafe": true
+    }
+  ]
+}
