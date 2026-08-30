@@ -1,11 +1,5 @@
-# Upstream ephemeral sync (create ephemeral PR & enable auto-merge)
-# - Creates an ephemeral branch from upstream/master
-# - Imports helper scripts from origin/master if needed
-# - Runs generator + prebuild copy
-# - Applies the small patch to the controller source
-# - Commits generated + patched files, pushes ephemeral branch
-# - Creates PR and enables auto-merge (squash)
-# - On failure, files an issue for manual attention
+name: Upstream ephemeral sync (create ephemeral PR & enable auto-merge)
+
 on:
   workflow_dispatch: {}
   schedule:
@@ -15,14 +9,14 @@ permissions:
   contents: write
 
 env:
-  UPSTREAM_REPO: "jniebuhr/gaggimate"
-  BASE_BRANCH: "master"
+  UPSTREAM_REPO: "jniebuhr/gaggimate"   # canonical upstream to base ephemeral branches on
+  BASE_BRANCH: "master"                 # target branch in this repo
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     outputs:
-      pr_url: ${{ steps.create_pr.outputs.pr_url }}
+      pr_url: ${{ steps.create_pr.outputs['pull-request-url'] || '' }}
     steps:
       - name: Checkout base branch
         uses: actions/checkout@v4
@@ -35,20 +29,22 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+        shell: bash
 
       - name: Add upstream remote & fetch
         run: |
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git || true
           git fetch upstream --depth=1
+        shell: bash
 
-      - name: Create ephemeral branch from upstream/master
+      - name: Create ephemeral branch from upstream/main
         id: create_branch
         run: |
           set -euo pipefail
           TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
           BRANCH="automation/upstream-sync-${TIMESTAMP}"
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
-          git checkout -b "${BRANCH}" upstream/master
+          git checkout -b "${BRANCH}" upstream/main
           echo "Created ephemeral branch ${BRANCH}"
         shell: bash
 
@@ -187,46 +183,27 @@ jobs:
           fi
         shell: bash
 
-      - name: Create Pull Request (if branch pushed)
-        if: ${{ steps.push_branch.outputs.pushed == 'true' }}
+      - name: Create or update Pull Request (peter-evans)
         id: create_pr
-        run: |
-          set -euo pipefail
-          REPO="${{ github.repository }}"
-          BRANCH="${{ steps.create_branch.outputs.branch }}"
-          TITLE="automation: upstream sync — apply board_override patch"
-          BODY="Automated ephemeral PR: apply the small board override change and include generated artifacts.\n\nThis PR will be auto-merged when required checks pass."
-          echo "Creating PR from ${BRANCH} -> ${{ env.BASE_BRANCH }}"
-          RESP=$(curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${REPO}/pulls" \
-            -d "$(jq -n --arg t "$TITLE" --arg head "$BRANCH" --arg base "${{ env.BASE_BRANCH }}" --arg b "$BODY" '{title:$t, head:$head, base:$base, body:$b}')" )
-          PR_NUMBER=$(echo "$RESP" | jq -r '.number // empty')
-          MESSAGE=$(echo "$RESP" | jq -r '.message // empty')
-          if [ -z "$PR_NUMBER" ]; then
-            if echo "$MESSAGE" | grep -qi "A pull request already exists"; then
-              PR_NUMBER=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/${REPO}/pulls?head=${{ github.repository_owner }}:${BRANCH}&base=${{ env.BASE_BRANCH }}" | jq -r '.[0].number')
-            fi
-          fi
-          if [ -z "$PR_NUMBER" ]; then
-            echo "Failed to create or find PR: $RESP"
-            exit 6
-          fi
-          PR_URL="https://github.com/${REPO}/pull/$PR_NUMBER"
-          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
-          echo "Created/Found PR #$PR_NUMBER: $PR_URL"
-        env:
-          REPO: ${{ github.repository }}
-        shell: bash
+        if: ${{ steps.push_branch.outputs.pushed == 'true' }}
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: regenerate board_override + apply patch"
+          title: "automation: upstream sync — apply board_override patch"
+          body: |
+            Automated ephemeral PR: apply the small board override change and include generated artifacts.
+
+            This PR will be auto-merged when required checks pass.
+          base: ${{ env.BASE_BRANCH }}
+          branch: ${{ steps.create_branch.outputs.branch }}
+          labels: automation,ci
 
       - name: Enable auto-merge for PR (squash)
-        if: ${{ steps.create_pr.outputs.pr_number != '' }}
+        if: ${{ steps.create_pr.outputs['pull-request-number'] != '' }}
         run: |
           set -euo pipefail
-          PR_NUMBER="${{ steps.create_pr.outputs.pr_number }}"
+          PR_NUMBER="${{ steps.create_pr.outputs['pull-request-number'] }}"
           REPO="${{ github.repository }}"
           echo "Enabling auto-merge for PR #${PR_NUMBER}"
           curl -s -X PUT \
@@ -239,9 +216,9 @@ jobs:
         shell: bash
 
       - name: Output result
-        if: ${{ steps.create_pr.outputs.pr_url != '' }}
+        if: ${{ steps.create_pr.outputs['pull-request-url'] != '' }}
         run: |
-          echo "PR created: ${{ steps.create_pr.outputs.pr_url }}"
+          echo "PR created: ${{ steps.create_pr.outputs['pull-request-url'] }}"
         shell: bash
 
       - name: Create issue on failure (via REST API)
