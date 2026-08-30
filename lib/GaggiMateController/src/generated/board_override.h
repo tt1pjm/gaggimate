@@ -1,4 +1,4 @@
-/*
+/* 
   Auto-generated board_override.h
   Generated: 2026-08-28T00:00:00Z
   Source: config/board_override.json
