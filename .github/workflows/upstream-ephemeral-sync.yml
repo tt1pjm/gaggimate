@@ -1,5 +1,20 @@
-name: Upstream ephemeral sync (create ephemeral PR & enable auto-merge)
-
+# Upstream ephemeral sync (create ephemeral PR & enable auto-merge)
+# - Creates an ephemeral branch from upstream/main
+# - Imports helper scripts from origin/master if needed
+# - Runs generator + prebuild copy
+# - Applies the small patch to the controller source
+# - Commits generated + patched files, pushes ephemeral branch
+# - Creates PR and enables auto-merge (squash)
+# - On failure, files an issue for manual attention
+#
+# Notes:
+# - Assumes helper scripts live on your origin/master (scripts/generate_board_override.py,
+#   scripts/pio_prebuild_generate_override.py, scripts/pio_prebuild_copy_override.py,
+#   scripts/apply_board_override_patch.sh). The workflow will import them into the ephemeral branch
+#   if upstream/main does not contain them.
+# - Make sure "Automatically delete head branches" is enabled in repo Settings if you want ephemeral
+#   branches removed after merge.
+# - Change UPSTREAM_REPO and BASE_BRANCH as appropriate.
 on:
   workflow_dispatch: {}
   schedule:
@@ -9,8 +24,8 @@ permissions:
   contents: write
 
 env:
-  UPSTREAM_REPO: "jniebuhr/gaggimate"   # canonical upstream
-  BASE_BRANCH: "master"                 # your target branch in this repo
+  UPSTREAM_REPO: "jniebuhr/gaggimate"   # canonical upstream to base ephemeral branches on
+  BASE_BRANCH: "master"                 # target branch in this repo
 
 jobs:
   sync:
@@ -35,21 +50,23 @@ jobs:
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git || true
           git fetch upstream --depth=1
 
-      - name: Create ephemeral branch from upstream/master
+      - name: Create ephemeral branch from upstream/main
         id: create_branch
         run: |
+          set -euo pipefail
           TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
           BRANCH="automation/upstream-sync-${TIMESTAMP}"
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
-          git checkout -b "${BRANCH}" upstream/master
-          echo "branch=${BRANCH}"
+          git checkout -b "${BRANCH}" upstream/main
+          echo "Created ephemeral branch ${BRANCH}"
         shell: bash
 
       - name: Import helper scripts from origin/master into ephemeral branch
+        id: import_helpers
         run: |
           set -euo pipefail
           echo "Fetching origin/master..."
-          git fetch origin master --depth=1
+          git fetch origin master --depth=1 || true
 
           FILES=(
             "scripts/generate_board_override.py"
@@ -60,68 +77,75 @@ jobs:
 
           CHANGED=false
           for f in "${FILES[@]}"; do
-            # Check whether the file exists in origin/master
             if git ls-tree --name-only origin/master -- "$f" | grep -q .; then
-              echo "Checking out $f from origin/master into branch"
+              echo "Checking out $f from origin/master"
               git checkout origin/master -- "$f"
               CHANGED=true
             else
-              echo "Note: $f not found in origin/master; skipping"
+              echo "Not present in origin/master: $f (skipping)"
             fi
           done
 
           if [ "$CHANGED" = "true" ]; then
-            git add "${FILES[@]}" || true
+            git add ${FILES[*]} || true
             if ! git diff --cached --quiet; then
-              git commit -m "chore: add helper scripts needed for ephemeral sync"
+              git commit -m "chore: add helper scripts required for ephemeral sync" || true
+              echo "helpers_committed=true" >> $GITHUB_OUTPUT
             else
-              echo "No staged changes to commit"
+              echo "No helper script changes to commit"
+              echo "helpers_committed=false" >> $GITHUB_OUTPUT
             fi
           else
-            echo "No helper scripts imported; nothing to commit"
+            echo "No helper scripts imported"
+            echo "helpers_committed=false" >> $GITHUB_OUTPUT
           fi
-          
-      - name: Make helper scripts executable 
+        shell: bash
+
+      - name: Ensure helper scripts are executable
         run: |
           chmod +x scripts/*.sh || true
+        shell: bash
 
       - name: Run generator and copy (ensure generator is present)
         id: gen
         run: |
           set -euo pipefail
-          # run generator (it writes both src/... and lib/... generated headers)
+          echo "Running generator..."
           python3 scripts/generate_board_override.py
+          echo "Running prebuild copy..."
           python3 scripts/pio_prebuild_copy_override.py
-        working-directory: .
-        continue-on-error: false
+        shell: bash
 
-      - name: Apply tiny patch to source (idempotent)
+      - name: Apply the small board-override patch (idempotent)
         id: patch
         run: |
           set -euo pipefail
-          ./scripts/apply_board_override_patch.sh
-        working-directory: .
-        continue-on-error: false
+          echo "Applying source patch..."
+          bash scripts/apply_board_override_patch.sh
+        shell: bash
 
       - name: Verify patch results (diagnostics)
         run: |
-          echo "Git status:"
-          git status --porcelain -b
-          echo "Show file head:"
-          sed -n '1,220p' lib/GaggiMateController/src/GaggiMateController.cpp || true
-          echo "Show generated header lines (if present):"
-          sed -n '1,120p' src/generated/board_override.h || true
+          echo "Git status (HEAD):"
+          git status --porcelain -b || true
+          echo "=== start: head of lib/GaggiMateController/src/GaggiMateController.cpp ==="
+          sed -n '1,300p' lib/GaggiMateController/src/GaggiMateController.cpp || true
+          echo "=== end: head of GaggiMateController.cpp ==="
+          echo "=== start: generated header preview ==="
+          sed -n '1,160p' src/generated/board_override.h || true
+          echo "=== end: generated header preview ==="
+        shell: bash
 
       - name: Stage generated and patched files (if any)
         id: stage
         run: |
           set -euo pipefail
           FILES=(
-          "src/generated/board_override.h"
-          "lib/GaggiMateController/src/generated/board_override.h"
-          "lib/GaggiMateController/src/GaggiMateController.cpp"
-          "config/board_override.json"
-          "data/board_override.json"
+            "src/generated/board_override.h"
+            "lib/GaggiMateController/src/generated/board_override.h"
+            "lib/GaggiMateController/src/GaggiMateController.cpp"
+            "config/board_override.json"
+            "data/board_override.json"
           )
 
           ADDED=false
@@ -147,11 +171,11 @@ jobs:
               echo "No staged content changes to commit"
               echo "committed=false" >> $GITHUB_OUTPUT
             fi
-            else
-              echo "No files to commit"
-              echo "committed=false" >> $GITHUB_OUTPUT
-            fi
-          shell: bash
+          else
+            echo "No files to commit"
+            echo "committed=false" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
 
       - name: Push ephemeral branch (if commits were made)
         id: push_branch
@@ -159,7 +183,7 @@ jobs:
           set -euo pipefail
           BRANCH="${{ steps.create_branch.outputs.branch }}"
           echo "branch=${BRANCH}"
-          # If a branch with the same name exists remotely, push only if HEAD differs
+          # If remote branch exists, push only if HEAD differs; else push new branch
           if git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null 2>&1; then
             if ! git diff --quiet "origin/${BRANCH}" HEAD; then
               git push origin HEAD:"${BRANCH}"
@@ -169,13 +193,14 @@ jobs:
               echo "pushed=false" >> $GITHUB_OUTPUT
             fi
           else
-            # Remote branch doesn't exist yet: push
             git push origin HEAD:"${BRANCH}"
             echo "pushed=true" >> $GITHUB_OUTPUT
           fi
+        shell: bash
+        if: steps.stage.outputs.committed == 'true' || steps.import_helpers.outputs.helpers_committed == 'true'
 
       - name: Create Pull Request (if branch pushed)
-        if: steps.stage.outputs.committed == 'true'
+        if: steps.push_branch.outputs.pushed == 'true'
         id: create_pr
         run: |
           set -euo pipefail
@@ -183,17 +208,20 @@ jobs:
           BRANCH="${{ steps.create_branch.outputs.branch }}"
           TITLE="automation: upstream sync — apply board_override patch"
           BODY="Automated ephemeral PR: apply the small board override change and include generated artifacts.\n\nThis PR will be auto-merged when required checks pass."
-          # Create PR
+          echo "Creating PR from ${BRANCH} -> ${{ env.BASE_BRANCH }}"
           RESP=$(curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${REPO}/pulls" \
             -d "$(jq -n --arg t "$TITLE" --arg head "$BRANCH" --arg base "${{ env.BASE_BRANCH }}" --arg b "$BODY" '{title:$t, head:$head, base:$base, body:$b}')" )
+
           PR_NUMBER=$(echo "$RESP" | jq -r '.number // empty')
+          MESSAGE=$(echo "$RESP" | jq -r '.message // empty')
           if [ -z "$PR_NUMBER" ]; then
-            # If PR already exists, find it
-            PR_NUMBER=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${REPO}/pulls?head=${{ github.repository_owner }}:${BRANCH}&base=${{ env.BASE_BRANCH }}" | jq -r '.[0].number')
+            if echo "$MESSAGE" | grep -qi "A pull request already exists"; then
+              PR_NUMBER=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${REPO}/pulls?head=${{ github.repository_owner }}:${BRANCH}&base=${{ env.BASE_BRANCH }}" | jq -r '.[0].number')
+            fi
           fi
           if [ -z "$PR_NUMBER" ]; then
             echo "Failed to create or find PR: $RESP"
@@ -202,13 +230,15 @@ jobs:
           PR_URL="https://github.com/${REPO}/pull/$PR_NUMBER"
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
           echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
-          echo "Created PR #$PR_NUMBER: $PR_URL"
+          echo "Created/Found PR #$PR_NUMBER: $PR_URL"
         env:
           REPO: ${{ github.repository }}
+        shell: bash
 
       - name: Enable auto-merge for PR (squash)
-        if: steps.stage.outputs.committed == 'true'
+        if: steps.create_pr.outputs.pr_number != ''
         run: |
+          set -euo pipefail
           PR_NUMBER="${{ steps.create_pr.outputs.pr_number }}"
           REPO="${{ github.repository }}"
           echo "Enabling auto-merge for PR #${PR_NUMBER}"
@@ -219,18 +249,8 @@ jobs:
             -d '{"merge_method":"squash"}' | jq .
         env:
           REPO: ${{ github.repository }}
+        shell: bash
 
-      - name: Create issue on failure (patch/generator)
-        if: failure()
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const title = "Upstream ephemeral sync failed";
-            const body = `The ephemeral upstream sync workflow failed. Check workflow run: ${process.env.GITHUB_RUN_URL || `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.GITHUB_RUN_ID || process.env.GITHUB_RUN_NUMBER}`}`;
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title,
-              body
-            });
+      - name: Output result
+        if: steps.create_pr.outputs.pr_url != ''
+        run: |](#)
