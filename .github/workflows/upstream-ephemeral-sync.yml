@@ -125,6 +125,47 @@ jobs:
             echo "committed=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Stage generated and patched files (if any)
+        id: stage
+        run: |
+          set -euo pipefail
+          FILES=(
+          "src/generated/board_override.h"
+          "lib/GaggiMateController/src/generated/board_override.h"
+          "lib/GaggiMateController/src/GaggiMateController.cpp"
+          "config/board_override.json"
+          "data/board_override.json"
+          )
+
+          ADDED=false
+          echo "Checking for files to add..."
+          for f in "${FILES[@]}"; do
+            if [ -f "$f" ]; then
+              git add "$f"
+              echo "Staged: $f"
+              ADDED=true
+            else
+              echo "Not present: $f"
+            fi
+          done
+
+          echo "Staged files (git status):"
+          git status --porcelain || true
+
+          if [ "$ADDED" = "true" ]; then
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: regenerate board_override + apply patch" || true
+              echo "committed=true" >> $GITHUB_OUTPUT
+            else
+              echo "No staged content changes to commit"
+              echo "committed=false" >> $GITHUB_OUTPUT
+            fi
+            else
+              echo "No files to commit"
+              echo "committed=false" >> $GITHUB_OUTPUT
+            fi
+          shell: bash
+
       - name: Push ephemeral branch (if commits were made)
         id: push_branch
         run: |
