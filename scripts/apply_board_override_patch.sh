@@ -8,6 +8,8 @@ if [ ! -f "$FILE" ]; then
   exit 3
 fi
 
+echo "Working on $FILE"
+
 # 1) Insert include if missing (after '#include <utility>')
 if ! grep -q '#include "generated/board_override.h"' "$FILE"; then
   awk '{
@@ -19,10 +21,21 @@ else
   echo "Include already present"
 fi
 
-# 2) Replace the assignment if present
-if grep -q '_config = config;' "$FILE"; then
-  sed -i 's/_config = config;/_config = applyBoardOverride(config);/' "$FILE"
-  echo "Replaced _config = config; with applyBoardOverride(...)"
+# 2) Replace the assignment if present (robust whitespace-aware regex)
+if grep -q '_config[[:space:]]*=[[:space:]]*config[[:space:]]*;' "$FILE"; then
+  # Use sed -E for extended regex; replace first occurrence in the detect block
+  sed -E -i '0,/_config[[:space:]]*=[[:space:]]*config[[:space:]]*;/s//_config = applyBoardOverride(config);/' "$FILE"
+  echo "Replaced _config = config; with _config = applyBoardOverride(config);"
 else
-  echo "Assignment already updated or not present"
+  echo "Assignment pattern not found (already updated or different form)"
+fi
+
+# Diagnostics: show a small unified diff if the file changed
+if git status --porcelain -- "$FILE" >/dev/null 2>&1; then
+  if ! git diff --quiet -- "$FILE"; then
+    echo "=== DIFF for $FILE ==="
+    git --no-pager diff -- "$FILE"
+  else
+    echo "No content changes detected for $FILE"
+  fi
 fi
