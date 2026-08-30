@@ -227,10 +227,10 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const title = "Upstream ephemeral sync failed";
-            const body = `The ephemeral upstream sync workflow failed. Check workflow run: ${process.env.GITHUB_RUN_URL}`;
-            github.issues.create({
+            const body = `The ephemeral upstream sync workflow failed. Check workflow run: ${process.env.GITHUB_RUN_URL || `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.GITHUB_RUN_ID || process.env.GITHUB_RUN_NUMBER}`}`;
+            await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title,
               body
-            })
+            });
