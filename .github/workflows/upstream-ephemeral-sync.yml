@@ -80,6 +80,10 @@ jobs:
           else
             echo "No helper scripts imported; nothing to commit"
           fi
+          
+      - name: Make helper scripts executable 
+        run: |
+          chmod +x scripts/*.sh || true
 
       - name: Run generator and copy (ensure generator is present)
         id: gen
