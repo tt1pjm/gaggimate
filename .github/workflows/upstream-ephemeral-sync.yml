@@ -35,13 +35,13 @@ jobs:
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git || true
           git fetch upstream --depth=1
 
-      - name: Create ephemeral branch from upstream/main
+      - name: Create ephemeral branch from upstream/master
         id: create_branch
         run: |
           TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
           BRANCH="automation/upstream-sync-${TIMESTAMP}"
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
-          git checkout -b "${BRANCH}" upstream/main
+          git checkout -b "${BRANCH}" upstream/master
           echo "branch=${BRANCH}"
         shell: bash
 
