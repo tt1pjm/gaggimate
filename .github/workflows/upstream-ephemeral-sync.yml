@@ -38,14 +38,14 @@ jobs:
           git fetch upstream --depth=1
         shell: bash
 
-      - name: Create ephemeral branch from upstream/main
+      - name: Create ephemeral branch from upstream/master
         id: create_branch
         run: |
           set -euo pipefail
           TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
           BRANCH="automation/upstream-sync-${TIMESTAMP}"
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
-          git checkout -b "${BRANCH}" upstream/main
+          git checkout -b "${BRANCH}" upstream/master
           echo "Created ephemeral branch ${BRANCH}"
         shell: bash
 
