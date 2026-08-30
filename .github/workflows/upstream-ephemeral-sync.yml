@@ -1,5 +1,5 @@
 # Upstream ephemeral sync (create ephemeral PR & enable auto-merge)
-# - Creates an ephemeral branch from upstream/main
+# - Creates an ephemeral branch from upstream/master
 # - Imports helper scripts from origin/master if needed
 # - Runs generator + prebuild copy
 # - Applies the small patch to the controller source
@@ -41,14 +41,14 @@ jobs:
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git || true
           git fetch upstream --depth=1
 
-      - name: Create ephemeral branch from upstream/main
+      - name: Create ephemeral branch from upstream/master
         id: create_branch
         run: |
           set -euo pipefail
           TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
           BRANCH="automation/upstream-sync-${TIMESTAMP}"
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
-          git checkout -b "${BRANCH}" upstream/main
+          git checkout -b "${BRANCH}" upstream/master
           echo "Created ephemeral branch ${BRANCH}"
         shell: bash
 
