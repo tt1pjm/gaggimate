@@ -116,19 +116,6 @@ jobs:
         id: stage
         run: |
           set -euo pipefail
-          # add likely changed files
-          git add src/generated/board_override.h lib/GaggiMateController/src/generated/board_override.h lib/GaggiMateController/src/GaggiMateController.cpp config/board_override.json data/board_override.json || true
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: regenerate board_override + apply patch" || true
-            echo "committed=true" >> $GITHUB_OUTPUT
-          else
-            echo "committed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Stage generated and patched files (if any)
-        id: stage
-        run: |
-          set -euo pipefail
           FILES=(
           "src/generated/board_override.h"
           "lib/GaggiMateController/src/generated/board_override.h"
