@@ -45,6 +45,42 @@ jobs:
           echo "branch=${BRANCH}"
         shell: bash
 
+      - name: Import helper scripts from origin/master into ephemeral branch
+        run: |
+          set -euo pipefail
+          echo "Fetching origin/master..."
+          git fetch origin master --depth=1
+
+          FILES=(
+            "scripts/generate_board_override.py"
+            "scripts/pio_prebuild_generate_override.py"
+            "scripts/pio_prebuild_copy_override.py"
+            "scripts/apply_board_override_patch.sh"
+          )
+
+          CHANGED=false
+          for f in "${FILES[@]}"; do
+            # Check whether the file exists in origin/master
+            if git ls-tree --name-only origin/master -- "$f" | grep -q .; then
+              echo "Checking out $f from origin/master into branch"
+              git checkout origin/master -- "$f"
+              CHANGED=true
+            else
+              echo "Note: $f not found in origin/master; skipping"
+            fi
+          done
+
+          if [ "$CHANGED" = "true" ]; then
+            git add "${FILES[@]}" || true
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: add helper scripts needed for ephemeral sync"
+            else
+              echo "No staged changes to commit"
+            fi
+          else
+            echo "No helper scripts imported; nothing to commit"
+          fi
+
       - name: Run generator and copy (ensure generator is present)
         id: gen
         run: |
