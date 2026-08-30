@@ -6,15 +6,6 @@
 # - Commits generated + patched files, pushes ephemeral branch
 # - Creates PR and enables auto-merge (squash)
 # - On failure, files an issue for manual attention
-#
-# Notes:
-# - Assumes helper scripts live on your origin/master (scripts/generate_board_override.py,
-#   scripts/pio_prebuild_generate_override.py, scripts/pio_prebuild_copy_override.py,
-#   scripts/apply_board_override_patch.sh). The workflow will import them into the ephemeral branch
-#   if upstream/main does not contain them.
-# - Make sure "Automatically delete head branches" is enabled in repo Settings if you want ephemeral
-#   branches removed after merge.
-# - Change UPSTREAM_REPO and BASE_BRANCH as appropriate.
 on:
   workflow_dispatch: {}
   schedule:
@@ -24,8 +15,8 @@ permissions:
   contents: write
 
 env:
-  UPSTREAM_REPO: "jniebuhr/gaggimate"   # canonical upstream to base ephemeral branches on
-  BASE_BRANCH: "master"                 # target branch in this repo
+  UPSTREAM_REPO: "jniebuhr/gaggimate"
+  BASE_BRANCH: "master"
 
 jobs:
   sync:
@@ -128,12 +119,10 @@ jobs:
         run: |
           echo "Git status (HEAD):"
           git status --porcelain -b || true
-          echo "=== start: head of lib/GaggiMateController/src/GaggiMateController.cpp ==="
+          echo "=== head of lib/GaggiMateController/src/GaggiMateController.cpp ==="
           sed -n '1,300p' lib/GaggiMateController/src/GaggiMateController.cpp || true
-          echo "=== end: head of GaggiMateController.cpp ==="
-          echo "=== start: generated header preview ==="
+          echo "=== generated header preview ==="
           sed -n '1,160p' src/generated/board_override.h || true
-          echo "=== end: generated header preview ==="
         shell: bash
 
       - name: Stage generated and patched files (if any)
@@ -179,11 +168,11 @@ jobs:
 
       - name: Push ephemeral branch (if commits were made)
         id: push_branch
+        if: ${{ steps.stage.outputs.committed == 'true' || steps.import_helpers.outputs.helpers_committed == 'true' }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.create_branch.outputs.branch }}"
           echo "branch=${BRANCH}"
-          # If remote branch exists, push only if HEAD differs; else push new branch
           if git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null 2>&1; then
             if ! git diff --quiet "origin/${BRANCH}" HEAD; then
               git push origin HEAD:"${BRANCH}"
@@ -197,10 +186,9 @@ jobs:
             echo "pushed=true" >> $GITHUB_OUTPUT
           fi
         shell: bash
-        if: steps.stage.outputs.committed == 'true' || steps.import_helpers.outputs.helpers_committed == 'true'
 
       - name: Create Pull Request (if branch pushed)
-        if: steps.push_branch.outputs.pushed == 'true'
+        if: ${{ steps.push_branch.outputs.pushed == 'true' }}
         id: create_pr
         run: |
           set -euo pipefail
@@ -214,7 +202,6 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${REPO}/pulls" \
             -d "$(jq -n --arg t "$TITLE" --arg head "$BRANCH" --arg base "${{ env.BASE_BRANCH }}" --arg b "$BODY" '{title:$t, head:$head, base:$base, body:$b}')" )
-
           PR_NUMBER=$(echo "$RESP" | jq -r '.number // empty')
           MESSAGE=$(echo "$RESP" | jq -r '.message // empty')
           if [ -z "$PR_NUMBER" ]; then
@@ -236,7 +223,7 @@ jobs:
         shell: bash
 
       - name: Enable auto-merge for PR (squash)
-        if: steps.create_pr.outputs.pr_number != ''
+        if: ${{ steps.create_pr.outputs.pr_number != '' }}
         run: |
           set -euo pipefail
           PR_NUMBER="${{ steps.create_pr.outputs.pr_number }}"
@@ -252,5 +239,24 @@ jobs:
         shell: bash
 
       - name: Output result
-        if: steps.create_pr.outputs.pr_url != ''
-        run: |](#)
+        if: ${{ steps.create_pr.outputs.pr_url != '' }}
+        run: |
+          echo "PR created: ${{ steps.create_pr.outputs.pr_url }}"
+        shell: bash
+
+      - name: Create issue on failure (via REST API)
+        if: failure()
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          TITLE="Upstream ephemeral sync failed"
+          BODY="The ephemeral upstream sync workflow failed. Check workflow run: ${GITHUB_RUN_URL:-https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}}"
+          echo "Creating issue in ${REPO}"
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/issues" \
+            -d "$(jq -n --arg t "$TITLE" --arg b "$BODY" '{title:$t, body:$b}')" | jq .
+        env:
+          REPO: ${{ github.repository }}
+        shell: bash
