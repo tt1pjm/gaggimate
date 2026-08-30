@@ -103,6 +103,15 @@ jobs:
         working-directory: .
         continue-on-error: false
 
+      - name: Verify patch results (diagnostics)
+        run: |
+          echo "Git status:"
+          git status --porcelain -b
+          echo "Show file head:"
+          sed -n '1,220p' lib/GaggiMateController/src/GaggiMateController.cpp || true
+          echo "Show generated header lines (if present):"
+          sed -n '1,120p' src/generated/board_override.h || true
+
       - name: Stage generated and patched files (if any)
         id: stage
         run: |
@@ -116,12 +125,26 @@ jobs:
             echo "committed=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Push ephemeral branch (only if commit was made)
-        if: steps.stage.outputs.committed == 'true'
+      - name: Push ephemeral branch (if commits were made)
+        id: push_branch
         run: |
+          set -euo pipefail
           BRANCH="${{ steps.create_branch.outputs.branch }}"
-          git push origin HEAD:"${BRANCH}"
-          echo "pushed=true" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH}"
+          # If a branch with the same name exists remotely, push only if HEAD differs
+          if git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null 2>&1; then
+            if ! git diff --quiet "origin/${BRANCH}" HEAD; then
+              git push origin HEAD:"${BRANCH}"
+              echo "pushed=true" >> $GITHUB_OUTPUT
+            else
+              echo "No changes to push (origin/${BRANCH} == HEAD)"
+              echo "pushed=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            # Remote branch doesn't exist yet: push
+            git push origin HEAD:"${BRANCH}"
+            echo "pushed=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Create Pull Request (if branch pushed)
         if: steps.stage.outputs.committed == 'true'
